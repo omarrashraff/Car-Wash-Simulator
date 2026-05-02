@@ -1,0 +1,290 @@
+import javax.swing.*;
+import java.awt.*;
+import java.util.LinkedList;
+import java.util.Queue;
+
+// ---------------------------------------------------------
+// Semaphore Class - Controls how many threads access a resource
+// ---------------------------------------------------------
+class Semaphore {
+    private int value;
+
+    public Semaphore(int value) {
+        this.value = value;
+    }
+
+    // Called by a thread that wants access
+    public synchronized void waitSem() {
+        while (value == 0) {
+            try {
+                wait();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        value--;
+    }
+
+    // Called by a thread when it's done using the resource
+    public synchronized void signalSem() {
+        value++;
+        notify();
+    }
+}
+
+// ---------------------------------------------------------
+// Car Class - Represents a car arriving at the car wash
+// ---------------------------------------------------------
+class Car extends Thread {
+    private final String name;
+    private final Queue<String> queue;
+    private final Semaphore mutex, empty, full;
+    private final JLabel queueLabel;
+    private final JTextArea logArea;
+
+    public Car(String name, Queue<String> queue, Semaphore mutex, Semaphore empty, Semaphore full,
+               JLabel queueLabel, JTextArea logArea) {
+        this.name = name;
+        this.queue = queue;
+        this.mutex = mutex;
+        this.empty = empty;
+        this.full = full;
+        this.queueLabel = queueLabel;
+        this.logArea = logArea;
+    }
+
+    @Override
+    public void run() {
+        try {
+            log("[ARRIVAL] " + name + " arrived at the garage.");
+
+            // Wait if the waiting area is full
+            empty.waitSem();
+
+            // Enter the queue safely
+            mutex.waitSem();
+            queue.add(name);
+            log("[QUEUE] " + name + " entered the waiting queue. (Queue size: " + queue.size() + ")");
+            updateQueueLabel();
+            mutex.signalSem();
+
+            // Notify pumps that a car is ready
+            full.signalSem();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void updateQueueLabel() {
+        SwingUtilities.invokeLater(() ->
+                queueLabel.setText("Waiting Queue: " + queue.size() + " cars"));
+    }
+
+    private void log(String message) {
+        SwingUtilities.invokeLater(() ->
+                logArea.append(message + "\n"));
+    }
+}
+
+// ---------------------------------------------------------
+// Pump Class - Represents a wash station that services cars
+// ---------------------------------------------------------
+class Pump extends Thread {
+    private final int id;
+    private final Queue<String> queue;
+    private final Semaphore mutex, empty, full, pumpLimit;
+    private final JLabel pumpLabel, queueLabel;
+    private final JTextArea logArea;
+
+    public Pump(int id, Queue<String> queue, Semaphore mutex, Semaphore empty, Semaphore full,
+                Semaphore pumpLimit, JLabel pumpLabel, JLabel queueLabel, JTextArea logArea) {
+        this.id = id;
+        this.queue = queue;
+        this.mutex = mutex;
+        this.empty = empty;
+        this.full = full;
+        this.pumpLimit = pumpLimit;
+        this.pumpLabel = pumpLabel;
+        this.queueLabel = queueLabel;
+        this.logArea = logArea;
+    }
+
+    @Override
+    public void run() {
+        try {
+            while (true) {
+
+                // Wait until a car is in the queue
+                full.waitSem();
+
+                // Wait until a pump slot is available
+                pumpLimit.waitSem();
+
+                // Lock queue to safely pick up next car
+                mutex.waitSem();
+                if (queue.isEmpty()) {
+                    mutex.signalSem();
+                    continue;
+                }
+
+                String carName = queue.poll();
+                log("[TAKEN] Pump " + id + " took " + carName + " for service. (Queue size: " + queue.size() + ")");
+                updateQueueLabel();
+                mutex.signalSem();
+
+                // Free one waiting area spot
+                empty.signalSem();
+
+                // Mark pump as busy on GUI
+                SwingUtilities.invokeLater(() -> {
+                    pumpLabel.setText("Pump " + id + ": " + carName + " (Busy)");
+                    pumpLabel.setBackground(Color.ORANGE);
+                });
+
+                log("[SERVICE START] " + carName + " started service at Pump " + id + " (Acquiring Bay)");
+
+                // Simulate wash time
+                Thread.sleep(3500);
+
+                log("[SERVICE END] " + carName + " finished service at Pump " + id + " (Releasing Bay)");
+
+                // Mark pump as free on GUI
+                SwingUtilities.invokeLater(() -> {
+                    pumpLabel.setText("Pump " + id + ": Free");
+                    pumpLabel.setBackground(Color.GREEN);
+                });
+
+                // Release pump slot
+                pumpLimit.signalSem();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void updateQueueLabel() {
+        SwingUtilities.invokeLater(() ->
+                queueLabel.setText("Waiting Queue: " + queue.size() + " cars"));
+    }
+
+    private void log(String message) {
+        SwingUtilities.invokeLater(() ->
+                logArea.append(message + "\n"));
+    }
+}
+
+// ---------------------------------------------------------
+// ServiceStation Class - Main GUI window and simulation control
+// ---------------------------------------------------------
+public class ServiceStation extends JFrame {
+    private Queue<String> queue = new LinkedList<>();
+    private Semaphore mutex, empty, full, pumpLimit;
+    private JLabel queueLabel;
+    private JTextArea logArea;
+    private JPanel pumpsPanel;
+    private JLabel[] pumpLabels;
+
+    public ServiceStation() {
+        setTitle("🚗 Car Wash Service Station Simulation");
+        setSize(900, 600);
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setLayout(new BorderLayout(10, 10));
+
+        // --- Top: Control Panel ---
+        JPanel controlPanel = new JPanel(new GridLayout(2, 4, 10, 10));
+
+        JTextField waitingField = new JTextField("5");
+        JTextField pumpField    = new JTextField("2");
+        JTextField carField     = new JTextField("5");
+        JButton startButton     = new JButton("Start Simulation");
+
+        controlPanel.add(new JLabel("Waiting Area Capacity:"));
+        controlPanel.add(waitingField);
+        controlPanel.add(new JLabel("Number of Pumps:"));
+        controlPanel.add(pumpField);
+        controlPanel.add(new JLabel("Number of Cars:"));
+        controlPanel.add(carField);
+        controlPanel.add(new JLabel(""));
+        controlPanel.add(startButton);
+
+        add(controlPanel, BorderLayout.NORTH);
+
+        // --- Center: Pumps Display ---
+        pumpsPanel = new JPanel();
+        add(pumpsPanel, BorderLayout.CENTER);
+
+        // --- Bottom: Queue Status ---
+        queueLabel = new JLabel("Waiting Queue: 0 cars", JLabel.CENTER);
+        queueLabel.setFont(new Font("Arial", Font.BOLD, 16));
+        queueLabel.setOpaque(true);
+        queueLabel.setBackground(Color.LIGHT_GRAY);
+        add(queueLabel, BorderLayout.SOUTH);
+
+        // --- Right: Event Log ---
+        logArea = new JTextArea();
+        logArea.setEditable(false);
+        logArea.setFont(new Font("Monospaced", Font.PLAIN, 14));
+        JScrollPane scrollPane = new JScrollPane(logArea);
+        add(scrollPane, BorderLayout.EAST);
+
+        // --- Start Button Action ---
+        startButton.addActionListener(e -> {
+            int waitingArea = Integer.parseInt(waitingField.getText());
+            int numPumps    = Integer.parseInt(pumpField.getText());
+            int numCars     = Integer.parseInt(carField.getText());
+            startSimulation(waitingArea, numPumps, numCars);
+        });
+
+        setVisible(true);
+    }
+
+    private void startSimulation(int waitingArea, int numPumps, int numCars) {
+        // Reset state
+        queue     = new LinkedList<>();
+        mutex     = new Semaphore(1);
+        empty     = new Semaphore(waitingArea);
+        full      = new Semaphore(0);
+        pumpLimit = new Semaphore(numPumps);
+
+        // Rebuild pump display
+        pumpsPanel.removeAll();
+        pumpsPanel.setLayout(new GridLayout(numPumps, 1, 10, 10));
+        pumpLabels = new JLabel[numPumps];
+
+        for (int i = 0; i < numPumps; i++) {
+            pumpLabels[i] = new JLabel("Pump " + (i + 1) + ": Free", JLabel.CENTER);
+            pumpLabels[i].setOpaque(true);
+            pumpLabels[i].setBackground(Color.GREEN);
+            pumpLabels[i].setFont(new Font("Arial", Font.PLAIN, 18));
+            pumpsPanel.add(pumpLabels[i]);
+        }
+
+        pumpsPanel.revalidate();
+        pumpsPanel.repaint();
+        logArea.setText("");
+
+        // Start pump threads
+        for (int i = 0; i < numPumps; i++) {
+            new Pump(i + 1, queue, mutex, empty, full, pumpLimit,
+                     pumpLabels[i], queueLabel, logArea).start();
+        }
+
+        // Start car threads with 1-second arrival gap
+        new Thread(() -> {
+            for (int i = 0; i < numCars; i++) {
+                String carName = "C" + (i + 1);
+                new Car(carName, queue, mutex, empty, full, queueLabel, logArea).start();
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(ServiceStation::new);
+    }
+}
